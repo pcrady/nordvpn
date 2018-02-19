@@ -1,0 +1,229 @@
+#!/usr/bin/env python
+
+#TODO:
+# Specify TCP or UDP
+# Specify type of vpn server
+# get rid of passwords
+
+from subprocess import check_output
+from os import listdir
+from os.path import isfile, join
+import pexpect
+import sys
+import psutil
+import getpass
+import random
+from argparse import ArgumentParser
+
+
+vpn_username = ''
+vpn_password = ''
+server_dir = '/etc/openvpn/'
+sudo_pass = ''
+timeout = 45
+countries = {'Albania' : 'al',
+             'Argentina': 'ar',
+             'Australia': 'au',
+             'Austria': 'at',
+             'Belgium': 'be',
+             'Brazil': 'ba',
+             'Bulgaria': 'bg',
+             'Canada': 'ca',
+             'Chile': 'cl',
+             'Costa Rica': 'cr',
+             'Croatia': 'hr',
+             'Cyprus': 'cy',
+             'CzechRepublic': 'cz',
+             'Denmark': 'dk',
+             'Egypt': 'eg',
+             'Estonia': 'ee',
+             'Finland': 'fi',
+             'France': 'fr',
+             'Georgia': 'ge',
+             'Germany': 'de',
+             'Greece': 'gr',
+             'HongKong': 'hk',
+             'Hungary': 'hu',
+             'Iceland': 'is',
+             'India': 'in',
+             'Indonesia': 'id',
+             'Ireland': 'ie',
+             'Israel': 'il',
+             'Italy': 'it',
+             'Japan': 'jp',
+             'Latvia': 'lv',
+             'Luxembourg': 'lu',
+             'Malaysia': 'my',
+             'Mexico': 'mx',
+             'Moldova': 'md',
+             'Netherlands': 'nl',
+             'New Zealand': 'nz',
+             'Norway': 'no',
+             'Poland': 'pl',
+             'Portugal': 'pt',
+             'Romania': 'ro',
+             'Russia': 'ru',
+             'Serbia': 'rs',
+             'Singapore': 'sg',
+             'Slovakia': 'sk',
+             'Slovenia': 'si',
+             'SouthAfrica': 'za',
+             'SouthKorea': 'kr',
+             'Spain': 'es',
+             'Sweden': 'se',
+             'Switzerland': 'ch',
+             'Taiwan': 'tw',
+             'Thailand': 'th',
+             'Turkey': 'tr',
+             'Ukraine': 'ua',
+             'UnitedKingdom': 'uk',
+             'UnitedStates': 'us',
+             'Vietnam': 'vn'}
+
+
+def verify_country(country):
+    keys = countries.keys()
+    if country not in keys:
+        print("You must choose from:")
+        for country in keys:
+            print(country)
+        exit()
+
+def get_args():
+    parser = ArgumentParser()
+    parser.add_argument("-c", "--connect", dest="country",
+                    help="Country to connect to")
+    parser.add_argument("-s", "--status",
+                    action="store_true", dest="status", default=False,
+                    help="Check VPN status")
+    parser.add_argument("-k", "--kill",
+                    action="store_true", dest="kill", default=False,
+                    help="Kill the current VPN connection")
+    parser.add_argument("-l", "--list",
+                    action="store_true", dest="list", default=False,
+                    help="Kill the current VPN connection")
+    args = parser.parse_args()
+    return args
+
+
+class VpnConnection:
+    def __init__(self, country, vpn_username, vpn_password):
+        self.vpn_username = vpn_username
+        self.vpn_password = vpn_password
+        self.sys_username = getpass.getuser()
+        #if vpn already open return that connection otherwise
+        if self.vpn_not_connected():
+            self.country = country
+            self.process_pids = self.open_vpn_connection()
+        else:
+            self.process_pids = self.get_vpn_connection_pids()
+            self.country = self.get_existing_conn_country()
+
+    def file_to_country_mapping(self, file_name):
+        country_code = file_name.split('.')[0]
+        country_code = ''.join([i for i in country_code if not i.isdigit()])
+        return countries.keys()[countries.values().index(country_code)]
+        
+    @classmethod
+    def vpn_not_connected(self):
+        # return true is vpn not connected, return false if vpn connected
+        try:
+            check_output(["pgrep", '-f', 'openvpn'])
+            return False
+        except:
+            return True
+    
+    def get_vpn_connection_pids(self):
+        # return existing vpn connection pids 
+        return map(int,check_output(["pgrep", '-f', 'openvpn']).split())
+
+    def get_existing_conn_country(self):
+        # return country from an existing vpn connection
+        try:
+            pinfo = [p.info for p in psutil.process_iter(attrs=['pid', 'name', 'cmdline']) if 'openvpn' in p.info['name']]
+            vpn_file = pinfo[0]['cmdline'][-1]
+            return self.file_to_country_mapping(vpn_file)
+        except psutil.NoSuchProcess:
+            print("No existing connection found.")
+
+    def give_sudo_password(self, process, sudo_pass):
+        # give sudo password to a process
+        # Try to send sudo password
+        try:
+            process.expect_exact('[sudo] password for {sys_username}:'.format(sys_username=self.sys_username))
+            process.sendline(sudo_pass)
+            process.logfile = sys.stdout
+        except:
+            print(str(process))
+
+    def get_random_country_file(self):
+        # get a random country file from the specified country
+        all_ovpn_files = [f for f in listdir(server_dir) if isfile(join(server_dir, f))]
+        all_ovpn_files = [f for f in all_ovpn_files if 'tcp443' in f]
+        all_ovpn_files = [f for f in all_ovpn_files if '-' not in f]
+        country_ovpn_files = [f for f in all_ovpn_files if countries[self.country] in f.split('.')[0]]
+        return random.choice(country_ovpn_files)
+
+    def open_vpn_connection(self):
+        # open a vpn connection and return the process
+        ovpn_file = self.get_random_country_file()
+        process = pexpect.spawn('sudo openvpn %s' % ovpn_file, cwd=server_dir, timeout=timeout)
+        self.give_sudo_password(process, sudo_pass)
+        # Try to send vpn username
+        try:
+            process.expect('Enter Auth Username:')
+            process.sendline(self.vpn_username)
+            process.logfile = sys.stdout
+        except:
+            print(str(process))
+            print('Failed to connect to VPN')
+            exit()
+        # try to send vpn password
+        try:
+            process.expect('Enter Auth Password:')
+            process.sendline(self.vpn_password)
+            process.logfile = sys.stdout
+        except:
+            print(str(process))
+            print('Failed to connect to VPN')
+            exit()
+        #try to find the end of the output 
+        try:
+            process.expect('Initialization Sequence Completed')
+            process.logfile = sys.stdout
+        except:
+            print(str(process))
+            print('Failed to connect to VPN')
+            exit()
+        return self.get_vpn_connection_pids()
+
+    def close_vpn_connection(self):
+        # close the vpn connectio
+        for pid in self.process_pids:
+            process = pexpect.spawn('sudo -k kill -{pid} PID'.format(pid=pid))
+            self.give_sudo_password(process, sudo_pass)
+        print('Terminated VPN connection')
+
+
+def main():
+    args = get_args()
+    if args.country:
+        verify_country(args.country)
+        connection = VpnConnection(args.country, vpn_username, vpn_password)
+    if args.list:
+        for country in countries.keys():
+            print(country)
+        exit()
+    if VpnConnection.vpn_not_connected():
+        print "VPN not currently Connected"
+        exit()
+    if args.status:
+        connection = VpnConnection(args.country, vpn_username, vpn_password)
+        print("Connected to " + connection.get_existing_conn_country())
+    if args.kill:
+        connection = VpnConnection(args.country, vpn_username, vpn_password)
+        connection.close_vpn_connection()
+
+
+if __name__ == "__main__":
+    main()
